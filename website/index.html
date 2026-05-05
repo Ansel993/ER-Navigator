@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ER Navigator</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #171b24;
+      --panel-2: #1e2430;
+      --text: #e6edf3;
+      --muted: #9da7b3;
+      --accent: #36cfc9;
+      --danger: #ff5d73;
+      --warn: #f5a623;
+      --ok: #35d07f;
+      --border: #2b3442;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: linear-gradient(180deg, #151a22 0%, #12161e 100%);
+      padding: 16px;
+      overflow-y: auto;
+    }
+
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+      margin: 0 0 4px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 0 0 16px;
+      font-size: 13px;
+    }
+
+    .status {
+      padding: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 10px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+
+    .eta-card {
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      margin-bottom: 12px;
+      display: none;
+    }
+
+    .eta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .metric {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 12px;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .hosp-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .hosp-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+      padding: 12px;
+      cursor: pointer;
+    }
+
+    .hosp-card:hover { border-color: #415066; }
+
+    .hosp-card.best {
+      border-color: rgba(54, 207, 201, 0.95);
+      box-shadow: 0 0 0 3px rgba(54, 207, 201, 0.18);
+    }
+
+    .hosp-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .hosp-name {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .hosp-type {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .badge {
+      font-size: 11px;
+      border-radius: 999px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+      height: fit-content;
+    }
+
+    .load-low { background: rgba(53, 208, 127, 0.15); color: #7ef0b1; border-color: rgba(53, 208, 127, 0.4); }
+    .load-medium { background: rgba(245, 166, 35, 0.15); color: #ffd07a; border-color: rgba(245, 166, 35, 0.4); }
+    .load-high { background: rgba(255, 130, 80, 0.16); color: #ffb289; border-color: rgba(255, 130, 80, 0.4); }
+    .load-overloaded { background: rgba(255, 93, 115, 0.16); color: #ff95a4; border-color: rgba(255, 93, 115, 0.4); }
+    .load-unknown { background: rgba(157, 167, 179, 0.15); color: #c4ccd6; border-color: rgba(157, 167, 179, 0.35); }
+
+    #map { height: 100vh; width: 100%; }
+  </style>
+</head>
+<body>
+  <aside class="sidebar">
+    <h1 class="title">ER Navigator</h1>
+    <p class="subtitle">Fastest hospital route + ML congestion/load insights</p>
+    <div id="status" class="status">Detecting your location...</div>
+    <section id="etaPanel" class="eta-card">
+      <strong id="etaHospital">-</strong>
+      <div class="eta-grid">
+        <div class="metric"><span>Distance</span><b id="etaDistance">-</b></div>
+        <div class="metric"><span>ETA</span><b id="etaMin">-</b></div>
+        <div class="metric"><span>Traffic Delay</span><b id="etaDelay">-</b></div>
+        <div class="metric"><span>Congestion</span><b id="etaCongestion">-</b></div>
+        <div class="metric"><span>ER Load</span><b id="etaLoad">-</b></div>
+        <div class="metric"><span>Overload Risk</span><b id="etaOverload">-</b></div>
+      </div>
+    </section>
+    <section id="hospitalList" class="hosp-list"></section>
+  </aside>
+
+  <main id="map"></main>
+
+  <script>
+    const map = L.map("map").setView([12.925, 79.135], 13);
+    // Standard (light) map style similar to Google default look.
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    let user = { lat: null, lon: null };
+    let userMarker = null;
+    let routeLine = null;
+    const hospitalMarkers = new Map();
+    const cardElByHospitalId = new Map();
+    const statusEl = document.getElementById("status");
+    const listEl = document.getElementById("hospitalList");
+    let selectedHospitalId = null;
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function badgeClass(load) {
+      const value = (load || "").toLowerCase();
+      if (value.includes("overloaded")) return "load-overloaded";
+      if (value.includes("high")) return "load-high";
+      if (value.includes("medium")) return "load-medium";
+      if (value.includes("low")) return "load-low";
+      return "load-unknown";
+    }
+
+    function renderHospitals(hospitals, bestHospitalId) {
+      listEl.innerHTML = "";
+      for (const marker of hospitalMarkers.values()) map.removeLayer(marker);
+      hospitalMarkers.clear();
+      cardElByHospitalId.clear();
+
+      hospitals.forEach((hospital) => {
+        const card = document.createElement("article");
+        card.className = "hosp-card";
+        if (bestHospitalId && String(hospital.hospital_id) === String(bestHospitalId)) {
+          card.classList.add("best");
+          selectedHospitalId = hospital.hospital_id;
+        }
+        card.innerHTML = `
+          <div class="hosp-top">
+            <div>
+              <p class="hosp-name">${hospital.hospital_name}</p>
+              <div class="hosp-type">${hospital.hospital_type}</div>
+            </div>
+            <span class="badge ${badgeClass(hospital.er_load_class_next_1h)}">${hospital.er_load_class_next_1h}</span>
+          </div>
+          <div class="hosp-type">Distance: ${hospital.distance_km?.toFixed(2) ?? "-"} km | Waiting: ${hospital.waiting_count}</div>
+        `;
+        card.addEventListener("click", () => selectHospital(hospital));
+        listEl.appendChild(card);
+        cardElByHospitalId.set(hospital.hospital_id, card);
+
+        const marker = L.marker([hospital.lat, hospital.lon]).addTo(map);
+        marker.bindPopup(`<b>${hospital.hospital_name}</b><br>${hospital.er_load_class_next_1h}`);
+        marker.on("click", () => selectHospital(hospital));
+        hospitalMarkers.set(hospital.hospital_id, marker);
+      });
+    }
+
+    async function fetchRecommendations() {
+      const query = new URLSearchParams({ lat: user.lat, lon: user.lon });
+      const resp = await fetch(`/recommend?${query.toString()}`);
+      const data = await resp.json();
+      const best = data.best;
+      const hospitalList = data.hospitals || [];
+      renderHospitals(hospitalList, best?.hospital?.hospital_id);
+      if (hospitalList.length > 0) {
+        setStatus(`Best hospital selected: ${best.hospital.hospital_name}`);
+      } else {
+        setStatus("No hospitals returned by server.");
+      }
+      return best;
+    }
+
+    function highlightHospital(hospitalId) {
+      for (const [id, el] of cardElByHospitalId.entries()) {
+        if (String(id) === String(hospitalId)) {
+          el.classList.add("best");
+        } else {
+          el.classList.remove("best");
+        }
+      }
+    }
+
+    function applyPrediction(data) {
+      if (routeLine) {
+        map.removeLayer(routeLine);
+      }
+      routeLine = L.polyline(data.route, {
+        color: "#36cfc9",
+        weight: 5,
+        opacity: 0.9
+      }).addTo(map);
+      map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+
+      document.getElementById("etaPanel").style.display = "block";
+      document.getElementById("etaHospital").textContent = data.hospital.hospital_name;
+      document.getElementById("etaDistance").textContent = `${data.distance_km} km`;
+      document.getElementById("etaMin").textContent = `${data.eta_min} min`;
+      document.getElementById("etaDelay").textContent = `${data.traffic_delay_min} min`;
+      document.getElementById("etaCongestion").textContent = data.congestion_level;
+      document.getElementById("etaLoad").textContent = data.er_load_class_next_1h;
+      document.getElementById("etaOverload").textContent = data.will_be_overloaded_next_1h ? "Likely" : "Unlikely";
+      document.getElementById("etaPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+      setStatus(`Route ready (${data.routing_source.toUpperCase()}).`);
+
+      selectedHospitalId = data.hospital.hospital_id;
+      highlightHospital(selectedHospitalId);
+    }
+
+    async function selectHospital(hospital) {
+      setStatus(`Routing to ${hospital.hospital_name}...`);
+      const resp = await fetch("/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lat: user.lat,
+          lon: user.lon,
+          hospital_id: hospital.hospital_id
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setStatus(data.error || "Prediction failed.");
+        return;
+      }
+
+      applyPrediction(data);
+    }
+
+    function init() {
+      if (!navigator.geolocation) {
+        setStatus("Geolocation is not supported in this browser.");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        user.lat = pos.coords.latitude;
+        user.lon = pos.coords.longitude;
+        map.setView([user.lat, user.lon], 13);
+        userMarker = L.marker([user.lat, user.lon]).addTo(map).bindPopup("You are here");
+        userMarker.openPopup();
+        setStatus("Location detected. Computing best hospital...");
+        const best = await fetchRecommendations();
+        if (best && best.route) {
+          applyPrediction(best);
+        }
+      }, () => {
+        setStatus("Location access denied. Enable GPS and reload.");
+      }, { enableHighAccuracy: true, timeout: 10000 });
+    }
+
+    init();
+  </script>
+</body>
+</html>
